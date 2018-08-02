@@ -37,6 +37,15 @@ func main() {
 }
 ```
 
+If you want to set a different endpoint for SignalFx, use:
+
+```go
+func main() {
+    exporter, err := signalfx.NewExporter(signalfx.Options{Token: "token", DatapointEndpoint: "Endpoint"})
+    ....
+}
+```
+
 If you want to set a different reporting interval (5 seconds, for example), use:
 
 ```go
@@ -46,4 +55,4 @@ func main() {
     ....
     view.SetReportingPeriod(5 * time.Second)
 }
-```# OpenCensus SignalFx Stats Exporter for Go
+```

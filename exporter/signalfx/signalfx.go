@@ -1,4 +1,4 @@
-// Copyright 2017, OpenCensus Authors
+// Copyright 2018, OpenCensus Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -48,6 +48,10 @@ type Options struct {
 	// Token contains the required token to send datapoints
 	// to SignalFx. It cannot be empty
 	Token string
+
+	// DatapointEndpoint contains the endpoint to send the datapoints
+	// to SignalFx.
+	DatapointEndpoint string
 
 	OnError func(err error)
 }
@@ -115,11 +119,11 @@ func (c *collector) formatMetric(v *view.View, row *view.Row, vd *view.Data, e *
 	switch data := row.Data.(type) {
 	case *view.CountData:
 		metric := signalFxMetric{
-			metricName:  sanitize(vd.View.Name),
-			metricType:  "cumulative_counter",
-			metricValue: float64(data.Value),
-			timestamp:   time.Now(),
-			dimensions:  buildDimensions(row.Tags),
+			metricName:     sanitize(vd.View.Name),
+			metricType:     "cumulative_counter",
+			metricValueInt: int64(data.Value),
+			timestamp:      time.Now(),
+			dimensions:     buildDimensions(row.Tags),
 		}
 		return metric
 	case *view.DistributionData:
@@ -147,11 +151,11 @@ func (c *collector) formatMetric(v *view.View, row *view.Row, vd *view.Data, e *
 		return metric
 	case *view.SumData:
 		metric := signalFxMetric{
-			metricName:  sanitize(vd.View.Name),
-			metricType:  "cumulative_counter",
-			metricValue: float64(data.Value),
-			timestamp:   time.Now(),
-			dimensions:  buildDimensions(row.Tags),
+			metricName:     sanitize(vd.View.Name),
+			metricType:     "cumulative_counter",
+			metricValueInt: int64(data.Value),
+			timestamp:      time.Now(),
+			dimensions:     buildDimensions(row.Tags),
 		}
 		return metric
 	case *view.LastValueData:
@@ -210,12 +214,13 @@ func (c *collector) addViewData(vd *view.Data) {
 }
 
 type signalFxMetric struct {
-	metricType  string
-	metricName  string
-	metricValue float64
-	timestamp   time.Time
-	dimensions  map[string]string
-	buckets     []int64
+	metricType     string
+	metricName     string
+	metricValue    float64
+	metricValueInt int64
+	timestamp      time.Time
+	dimensions     map[string]string
+	buckets        []int64
 }
 
 func newCollector(opts Options) *collector {
@@ -246,6 +251,9 @@ func viewSignature(namespace string, v *view.View) string {
 // sendRequest sends a package of data containing one metric
 func sendRequest(e *Exporter, data signalFxMetric) {
 	client := sfxclient.NewHTTPSink()
+	if e.opts.DatapointEndpoint != "" {
+		client.DatapointEndpoint = e.opts.DatapointEndpoint
+	}
 	client.AuthToken = e.opts.Token
 	ctx := context.Background()
 
@@ -259,9 +267,8 @@ func sendRequest(e *Exporter, data signalFxMetric) {
 		}
 	case "cumulative_counter":
 		err := client.AddDatapoints(ctx, []*datapoint.Datapoint{
-			sfxclient.CumulativeF(data.metricName, data.dimensions, data.metricValue),
+			sfxclient.Cumulative(data.metricName, data.dimensions, data.metricValueInt),
 		})
-		println("sendind...")
 		if err != nil {
 			e.opts.OnError(errors.New(fmt.Sprintf("Error sending datapoint to SignalFx: %T", err)))
 		}
@@ -295,7 +302,7 @@ func (c *collector) cloneViewData() map[string]*view.Data {
 	return viewDataCopy
 }
 
-const labelKeySizeLimit = 100
+const labelKeySizeLimit = 128
 
 // Sanitize returns a string that is trunacated to 100 characters if it's too
 // long, and replaces non-alphanumeric characters to underscores.

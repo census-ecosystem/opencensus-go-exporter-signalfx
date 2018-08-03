@@ -25,8 +25,6 @@ import (
 
 	"errors"
 	"fmt"
-	"sort"
-
 	"strings"
 	"unicode"
 
@@ -124,29 +122,6 @@ func (c *collector) formatMetric(v *view.View, row *view.Row, vd *view.Data, e *
 			metricValueInt: int64(data.Value),
 			timestamp:      time.Now(),
 			dimensions:     buildDimensions(row.Tags),
-		}
-		return metric
-	case *view.DistributionData:
-		indicesMap := make(map[float64]int)
-		buckets := make([]float64, 0, len(v.Aggregation.Buckets))
-		for i, b := range v.Aggregation.Buckets {
-			if _, ok := indicesMap[b]; !ok {
-				indicesMap[b] = i
-				buckets = append(buckets, b)
-			}
-		}
-		sort.Float64s(buckets)
-		var values []int64
-		for _, bucket := range buckets {
-			values = append(values, int64(bucket))
-		}
-
-		metric := signalFxMetric{
-			metricName: sanitize(vd.View.Name),
-			metricType: "cumulative_bucket",
-			timestamp:  time.Now(),
-			dimensions: buildDimensions(row.Tags),
-			buckets:    values,
 		}
 		return metric
 	case *view.SumData:
@@ -269,20 +244,6 @@ func sendRequest(e *Exporter, data signalFxMetric) {
 		err := client.AddDatapoints(ctx, []*datapoint.Datapoint{
 			sfxclient.Cumulative(data.metricName, data.dimensions, data.metricValueInt),
 		})
-		if err != nil {
-			e.opts.OnError(errors.New(fmt.Sprintf("Error sending datapoint to SignalFx: %T", err)))
-		}
-	case "cumulative_bucket":
-		bucket := sfxclient.CumulativeBucket{
-			MetricName: data.metricName,
-			Dimensions: data.dimensions,
-		}
-
-		for _, value := range data.buckets {
-			bucket.Add(value)
-		}
-
-		err := client.AddDatapoints(ctx, bucket.Datapoints())
 		if err != nil {
 			e.opts.OnError(errors.New(fmt.Sprintf("Error sending datapoint to SignalFx: %T", err)))
 		}

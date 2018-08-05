@@ -51,6 +51,10 @@ type Options struct {
 	// to SignalFx.
 	DatapointEndpoint string
 
+	// OnError is the hook to be called when there is
+	// an error uploading the stats or tracing data.
+	// If no custom hook is set, errors are logged.
+	// Optional.
 	OnError func(err error)
 }
 
@@ -74,7 +78,6 @@ var _ view.Exporter = (*Exporter)(nil)
 
 // registerViews creates the view map and prevents duplicated views
 func (c *collector) registerViews(views ...*view.View) {
-	count := 0
 	for _, view := range views {
 		sig := viewSignature(view.Name, view)
 		c.registeredViewsMu.Lock()
@@ -85,11 +88,7 @@ func (c *collector) registerViews(views ...*view.View) {
 			c.registeredViewsMu.Lock()
 			c.registeredViews[sig] = desc
 			c.registeredViewsMu.Unlock()
-			count++
 		}
-	}
-	if count == 0 {
-		return
 	}
 }
 
@@ -113,7 +112,9 @@ func (e *Exporter) ExportView(vd *view.Data) {
 	extractViewData(vd, e)
 }
 
-func (c *collector) formatMetric(v *view.View, row *view.Row, vd *view.Data, e *Exporter) signalFxMetric {
+// toMetric receives the view data information and creates metrics that are adequate according to
+// graphite documentation.
+func (c *collector) toMetric(v *view.View, row *view.Row, vd *view.Data, e *Exporter) signalFxMetric {
 	switch data := row.Data.(type) {
 	case *view.CountData:
 		metric := signalFxMetric{
@@ -143,7 +144,7 @@ func (c *collector) formatMetric(v *view.View, row *view.Row, vd *view.Data, e *
 		}
 		return metric
 	default:
-		e.opts.OnError(errors.New(fmt.Sprintf("aggregation %T is not yet supported", data)))
+		e.opts.onError(fmt.Errorf("aggregation %T is not yet supported", data))
 		return signalFxMetric{}
 	}
 }
@@ -151,11 +152,13 @@ func (c *collector) formatMetric(v *view.View, row *view.Row, vd *view.Data, e *
 // extractViewData extracts stats data
 func extractViewData(vd *view.Data, e *Exporter) {
 	for _, row := range vd.Rows {
-		metric := e.c.formatMetric(vd.View, row, vd, e)
+		metric := e.c.toMetric(vd.View, row, vd, e)
 		go sendRequest(e, metric)
 	}
 }
 
+// buildDimensions uses the tag values and keys to create
+// the dimensions used by SignalFx
 func buildDimensions(t []tag.Tag) map[string]string {
 	values := make(map[string]string)
 	for _, t := range t {
@@ -179,6 +182,7 @@ type collector struct {
 	registeredViews map[string]string
 }
 
+// addViewData assigns the view data to the correct view
 func (c *collector) addViewData(vd *view.Data) {
 	c.registerViews(vd.View)
 	sig := viewSignature(vd.View.Name, vd.View)
@@ -198,6 +202,7 @@ type signalFxMetric struct {
 	buckets        []int64
 }
 
+// newCollector returns a collector struct
 func newCollector(opts Options) *collector {
 	return &collector{
 		opts:            opts,
@@ -206,6 +211,8 @@ func newCollector(opts Options) *collector {
 	}
 }
 
+// viewName builds a unique name composed of the namespace
+// and the sanitized view name
 func viewName(namespace string, v *view.View) string {
 	var name string
 	if namespace != "" {
@@ -214,6 +221,9 @@ func viewName(namespace string, v *view.View) string {
 	return name + sanitize(v.Name)
 }
 
+// viewSignature builds a signature that will identify a view
+// The signature consists of the namespace, the viewName and the
+// list of tags. Example: Namespace_viewName-tagName...
 func viewSignature(namespace string, v *view.View) string {
 	var buf bytes.Buffer
 	buf.WriteString(viewName(namespace, v))
@@ -223,7 +233,7 @@ func viewSignature(namespace string, v *view.View) string {
 	return buf.String()
 }
 
-// sendRequest sends a package of data containing one metric
+// sendRequest sends a package of data containing a metric
 func sendRequest(e *Exporter, data signalFxMetric) {
 	client := sfxclient.NewHTTPSink()
 	if e.opts.DatapointEndpoint != "" {
@@ -238,29 +248,18 @@ func sendRequest(e *Exporter, data signalFxMetric) {
 			sfxclient.GaugeF(data.metricName, data.dimensions, data.metricValue),
 		})
 		if err != nil {
-			e.opts.OnError(errors.New(fmt.Sprintf("Error sending datapoint to SignalFx: %T", err)))
+			e.opts.onError(fmt.Errorf("Error sending datapoint to SignalFx: %T", err))
 		}
 	case "cumulative_counter":
 		err := client.AddDatapoints(ctx, []*datapoint.Datapoint{
 			sfxclient.Cumulative(data.metricName, data.dimensions, data.metricValueInt),
 		})
 		if err != nil {
-			e.opts.OnError(errors.New(fmt.Sprintf("Error sending datapoint to SignalFx: %T", err)))
+			e.opts.onError(fmt.Errorf("Error sending datapoint to SignalFx: %T", err))
 		}
 	default:
-		e.opts.OnError(errors.New(fmt.Sprintf("Metric type not supported: %s", data.metricType)))
+		e.opts.onError(fmt.Errorf("Metric type not supported: %s", data.metricType))
 	}
-}
-
-func (c *collector) cloneViewData() map[string]*view.Data {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	viewDataCopy := make(map[string]*view.Data)
-	for sig, viewData := range c.viewData {
-		viewDataCopy[sig] = viewData
-	}
-	return viewDataCopy
 }
 
 const labelKeySizeLimit = 128
@@ -284,7 +283,7 @@ func sanitize(s string) string {
 	return s
 }
 
-// converts anything that is not a letter or digit to an underscore
+// sanitizeRune converts anything that is not a letter or digit to an underscore
 func sanitizeRune(r rune) rune {
 	if unicode.IsLetter(r) || unicode.IsDigit(r) {
 		return r

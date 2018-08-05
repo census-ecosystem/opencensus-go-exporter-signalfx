@@ -1,4 +1,5 @@
 # OpenCensus SignalFx Stats Exporter for Go
+[![Gitter chat][gitter-image]][gitter-url]
 
 The _OpenCensus SignalFx Stats Exporter for Go_ is a stats exporter that
 exports data to [SignalFx](https://signalfx.com), a real-time monitoring
@@ -14,13 +15,13 @@ maps, as well as real-time anomaly detection.
 import "opencensus-go-signalfx/exporter/signalfx"
 ```
 
-The API of this project is still evolving, see: [Deprecation Policy](#deprecation-policy).
+The API of this project is still evolving.
 The use of vendoring or a dependency management tool is recommended.
 
 
 ### Prerequisites
 
-To use this exporter, you must have a [SignalFx](https://signalfx.com)
+To use this exporter, one must have a [SignalFx](https://signalfx.com)
 account and corresponding [data ingest
 token](https://docs.signalfx.com/en/latest/admin-guide/tokens.html).
 
@@ -37,7 +38,7 @@ func main() {
 }
 ```
 
-If you want to set a different endpoint for SignalFx, use:
+It is possible to set a different endpoint for SignalFx, use:
 
 ```go
 func main() {
@@ -46,7 +47,7 @@ func main() {
 }
 ```
 
-If you want to set a different reporting interval (5 seconds, for example), use:
+It is possible to set different reporting intervals by using `SetReportingPeriod()`, for example:
 
 ```go
 func main() {
@@ -56,3 +57,6 @@ func main() {
     view.SetReportingPeriod(5 * time.Second)
 }
 ```
+
+[gitter-image]: https://badges.gitter.im/census-instrumentation/lobby.svg
+[gitter-url]: https://gitter.im/census-instrumentation/lobby?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge

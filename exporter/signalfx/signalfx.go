@@ -37,8 +37,9 @@ import (
 // Exporter exports stats to SignalFx
 type Exporter struct {
 	// Options used to register and log stats
-	opts Options
-	c    *collector
+	opts   Options
+	c      *collector
+	client *sfxclient.HTTPSink
 }
 
 // Options contains options for configuring the exporter.
@@ -48,7 +49,7 @@ type Options struct {
 	Token string
 
 	// DatapointEndpoint contains the endpoint to send the datapoints
-	// to SignalFx.
+	// to SignalFx. The default value can be found as sfxclient.IngestEndpointV2
 	DatapointEndpoint string
 
 	// OnError is the hook to be called when there is
@@ -67,9 +68,15 @@ func NewExporter(o Options) (*Exporter, error) {
 
 	collector := newCollector(o)
 	e := &Exporter{
-		opts: o,
-		c:    collector,
+		opts:   o,
+		c:      collector,
+		client: sfxclient.NewHTTPSink(),
 	}
+
+	if e.opts.DatapointEndpoint != "" {
+		e.client.DatapointEndpoint = e.opts.DatapointEndpoint
+	}
+	e.client.AuthToken = e.opts.Token
 
 	return e, nil
 }
@@ -78,13 +85,13 @@ var _ view.Exporter = (*Exporter)(nil)
 
 // registerViews creates the view map and prevents duplicated views
 func (c *collector) registerViews(views ...*view.View) {
-	for _, view := range views {
-		sig := viewSignature(view.Name, view)
+	for _, thisView := range views {
+		sig := viewSignature(thisView.Name, thisView)
 		c.registeredViewsMu.Lock()
 		_, ok := c.registeredViews[sig]
 		c.registeredViewsMu.Unlock()
 		if !ok {
-			desc := sanitize(view.Name)
+			desc := sanitize(thisView.Name)
 			c.registeredViewsMu.Lock()
 			c.registeredViews[sig] = desc
 			c.registeredViewsMu.Unlock()
@@ -235,30 +242,25 @@ func viewSignature(namespace string, v *view.View) string {
 
 // sendRequest sends a package of data containing a metric
 func sendRequest(e *Exporter, data signalFxMetric) {
-	client := sfxclient.NewHTTPSink()
-	if e.opts.DatapointEndpoint != "" {
-		client.DatapointEndpoint = e.opts.DatapointEndpoint
-	}
-	client.AuthToken = e.opts.Token
 	ctx := context.Background()
 
 	switch data.metricType {
 	case "gauge":
-		err := client.AddDatapoints(ctx, []*datapoint.Datapoint{
+		err := e.client.AddDatapoints(ctx, []*datapoint.Datapoint{
 			sfxclient.GaugeF(data.metricName, data.dimensions, data.metricValue),
 		})
 		if err != nil {
-			e.opts.onError(fmt.Errorf("Error sending datapoint to SignalFx: %T", err))
+			e.opts.onError(fmt.Errorf("error sending datapoint to SignalFx: %T", err))
 		}
 	case "cumulative_counter":
-		err := client.AddDatapoints(ctx, []*datapoint.Datapoint{
+		err := e.client.AddDatapoints(ctx, []*datapoint.Datapoint{
 			sfxclient.Cumulative(data.metricName, data.dimensions, data.metricValueInt),
 		})
 		if err != nil {
-			e.opts.onError(fmt.Errorf("Error sending datapoint to SignalFx: %T", err))
+			e.opts.onError(fmt.Errorf("error sending datapoint to SignalFx: %T", err))
 		}
 	default:
-		e.opts.onError(fmt.Errorf("Metric type not supported: %s", data.metricType))
+		e.opts.onError(fmt.Errorf("metric type not supported: %s", data.metricType))
 	}
 }
 

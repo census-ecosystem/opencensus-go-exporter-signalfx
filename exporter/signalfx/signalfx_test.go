@@ -510,6 +510,6 @@ func TestCounterDataDimensionsOutput(t *testing.T) {
 			}
 		}
 	}
-	
+
 	l.Close()
 }

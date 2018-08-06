@@ -74,9 +74,6 @@ var MetricTypeName = map[int32]string{
 	3: "CUMULATIVE_COUNTER",
 }
 
-var dataPoints []TestDatapoint
-var token = false
-
 func addDataPoint(dataPoints []TestDatapoint, dataPoint TestDatapoint) []TestDatapoint {
 	exists := false
 	if len(dataPoints) == 0 {
@@ -94,7 +91,7 @@ func addDataPoint(dataPoints []TestDatapoint, dataPoint TestDatapoint) []TestDat
 	return dataPoints
 }
 
-func decodeToken(req *http.Request, tokenValue string) {
+func decodeToken(req *http.Request, tokenValue string) bool {
 	var header []string
 	for name, headers := range req.Header {
 		name = strings.ToLower(name)
@@ -104,11 +101,13 @@ func decodeToken(req *http.Request, tokenValue string) {
 	}
 	value := strings.Join(header, "\n")
 	if strings.Contains(value, tokenValue) {
-		token = true
+		return true
 	}
+	return false
 }
 
-func decodeDatapoints(seenBodyPoints com_signalfx_metrics_protobuf.DataPointUploadMessage) {
+func decodeDatapoints(seenBodyPoints com_signalfx_metrics_protobuf.DataPointUploadMessage,
+	dataPoints []TestDatapoint) []TestDatapoint {
 	for i := 0; i < len(seenBodyPoints.Datapoints); i++ {
 		var dimensions []Dimension
 		if len(seenBodyPoints.Datapoints[i].GetDimensions()) != 0 {
@@ -122,16 +121,23 @@ func decodeDatapoints(seenBodyPoints com_signalfx_metrics_protobuf.DataPointUplo
 		} else {
 			dimensions = nil
 		}
-
+		metricType := int32(*seenBodyPoints.Datapoints[i].MetricType)
+		var metricValue string
+		if metricType == 3 {
+			metricValue = strconv.FormatInt(seenBodyPoints.Datapoints[i].Value.GetIntValue(), 16)
+		} else {
+			metricValue = strconv.FormatFloat(*seenBodyPoints.Datapoints[i].Value.DoubleValue,
+				'g', 1, 64)
+		}
 		dataPoint := TestDatapoint{
-			MetricName: *seenBodyPoints.Datapoints[i].Metric,
-			MetricValue: strconv.FormatFloat(*seenBodyPoints.Datapoints[i].Value.DoubleValue,
-				'g', 1, 64),
-			MetricType:       MetricTypeName[int32(*seenBodyPoints.Datapoints[i].MetricType)],
+			MetricName:       *seenBodyPoints.Datapoints[i].Metric,
+			MetricValue:      metricValue,
+			MetricType:       MetricTypeName[metricType],
 			MetricDimensions: dimensions,
 		}
 		dataPoints = addDataPoint(dataPoints, dataPoint)
 	}
+	return dataPoints
 }
 
 func TestExporterTokenSet(t *testing.T) {
@@ -153,7 +159,8 @@ func TestExporterTokenNotSet(t *testing.T) {
 }
 
 func TestGaugeDataOutput(t *testing.T) {
-	dataPoints = nil
+	var dataPoints []TestDatapoint
+	var token = false
 	tokenValue := "opencensusT0k3n"
 	retString := `"OK"`
 	retCode := http.StatusOK
@@ -170,8 +177,8 @@ func TestGaugeDataOutput(t *testing.T) {
 		req.Body.Close()
 		proto.Unmarshal(bodyBytes.Bytes(), seenBodyPoints)
 
-		decodeDatapoints(*seenBodyPoints)
-		decodeToken(req, tokenValue)
+		dataPoints = decodeDatapoints(*seenBodyPoints, dataPoints)
+		token = decodeToken(req, tokenValue)
 
 		rw.WriteHeader(retCode)
 		io.WriteString(rw, retString)
@@ -228,7 +235,7 @@ func TestGaugeDataOutput(t *testing.T) {
 
 	for _, m := range measures {
 		stats.Record(context.Background(), m.M(1))
-		<-time.After(10 * time.Millisecond)
+		<-time.After(30 * time.Millisecond)
 	}
 
 	if !token {
@@ -259,7 +266,8 @@ func TestGaugeDataOutput(t *testing.T) {
 }
 
 func TestCounterDataOutput(t *testing.T) {
-	dataPoints = nil
+	var dataPoints []TestDatapoint
+	var token = false
 	tokenValue := "S3cr3tT0k3n"
 	retString := `"OK"`
 	retCode := http.StatusOK
@@ -275,9 +283,8 @@ func TestCounterDataOutput(t *testing.T) {
 		}
 		req.Body.Close()
 		proto.Unmarshal(bodyBytes.Bytes(), seenBodyPoints)
-
-		decodeDatapoints(*seenBodyPoints)
-		decodeToken(req, tokenValue)
+		dataPoints = decodeDatapoints(*seenBodyPoints, dataPoints)
+		token = decodeToken(req, tokenValue)
 
 		rw.WriteHeader(retCode)
 		io.WriteString(rw, retString)
@@ -322,7 +329,7 @@ func TestCounterDataOutput(t *testing.T) {
 
 	var vc vCreator
 	for _, m := range measures {
-		vc.createAndAppend(m.Name(), m.Description(), nil, m, view.LastValue())
+		vc.createAndAppend(m.Name(), m.Description(), nil, m, view.Count())
 	}
 
 	if err := view.Register(vc...); err != nil {
@@ -334,7 +341,138 @@ func TestCounterDataOutput(t *testing.T) {
 
 	for _, m := range measures {
 		stats.Record(context.Background(), m.M(1))
-		<-time.After(10 * time.Millisecond)
+		<-time.After(30 * time.Millisecond)
+	}
+
+	if !token {
+		t.Fatal("Token not properly set")
+	}
+
+	if len(dataPoints) != len(measures) {
+		t.Fatalf("expected %d, but got %d dataPoints", len(measures), len(dataPoints))
+	}
+
+	for _, name := range names {
+		correct := false
+		metricName := "test_" + name
+		for _, point := range dataPoints {
+			if metricName == point.MetricName &&
+				point.MetricValue == "1" &&
+				point.MetricType == "CUMULATIVE_COUNTER" {
+				correct = true
+			}
+		}
+		if !correct {
+			t.Fatalf("expected metric name to be %s, "+
+				"metric value to be 1 and metricType to be CUMULATIVE_COUNTER", metricName)
+		}
+	}
+
+	l.Close()
+}
+
+func TestCounterDataDimensionsOutput(t *testing.T) {
+	var dataPoints []TestDatapoint
+	var token = false
+	tokenValue := "S3cr3tT0k3nD1m3ns10s"
+	retString := `"OK"`
+	retCode := http.StatusOK
+	var blockResponse chan struct{}
+	var cancelCallback func()
+
+	seenBodyPoints := &com_signalfx_metrics_protobuf.DataPointUploadMessage{}
+	handler := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		bodyBytes := bytes.Buffer{}
+		_, err := io.Copy(&bodyBytes, req.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Body.Close()
+		proto.Unmarshal(bodyBytes.Bytes(), seenBodyPoints)
+
+		dataPoints = decodeDatapoints(*seenBodyPoints, dataPoints)
+		token = decodeToken(req, tokenValue)
+
+		rw.WriteHeader(retCode)
+		io.WriteString(rw, retString)
+		if blockResponse != nil {
+			if cancelCallback != nil {
+				cancelCallback()
+			}
+			select {
+			case <-req.Context().Done():
+			case <-blockResponse:
+			}
+		}
+	})
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+
+	server := http.Server{
+		Handler: handler,
+	}
+	serverDone := make(chan struct{})
+	go func() {
+		if err := server.Serve(l); err == nil {
+			t.Log("I expect serve to eventually error")
+		}
+		close(serverDone)
+	}()
+
+	exporter, err := NewExporter(Options{Token: tokenValue,
+		DatapointEndpoint: "http://" + l.Addr().String()})
+	if err != nil {
+		t.Fatalf("failed to create signalfx exporter: %v", err)
+	}
+
+	view.RegisterExporter(exporter)
+
+	ctx := context.Background()
+
+	// Creating tags for the views
+	key1, err := tag.NewKey("name")
+	if err != nil {
+		t.Log(err)
+	}
+
+	key2, err := tag.NewKey("author")
+	if err != nil {
+		t.Log(err)
+	}
+
+	// Assigning values to the tags in the context
+	ctx, err = tag.New(context.Background(),
+		tag.Insert(key1, "video1"),
+		tag.Upsert(key2, "john"),
+	)
+
+	var keys []tag.Key
+
+	keys = append(keys, key1)
+	keys = append(keys, key2)
+
+	names := []string{"foo", "bar"}
+
+	var measures mSlice
+	for _, name := range names {
+		measures.createAndAppend("test."+name, name, "")
+	}
+
+	var vc vCreator
+	for _, m := range measures {
+		vc.createAndAppend(m.Name(), m.Description(), keys, m, view.LastValue())
+	}
+
+	if err := view.Register(vc...); err != nil {
+		t.Fatalf("failed to create views: %v", err)
+	}
+	defer view.Unregister(vc...)
+
+	view.SetReportingPeriod(time.Millisecond)
+
+	for _, m := range measures {
+		stats.Record(ctx, m.M(1))
+		<-time.After(30 * time.Millisecond)
 	}
 
 	if !token {
@@ -361,5 +499,17 @@ func TestCounterDataOutput(t *testing.T) {
 		}
 	}
 
+	for _, point := range dataPoints {
+		if len(point.MetricDimensions) != len(keys) {
+			t.Fatalf("expected %d, but got %d dimensions", len(keys), len(point.MetricDimensions))
+		}
+		for _, dimension := range point.MetricDimensions {
+			if (*dimension.Key != "name" && *dimension.Key != "author") ||
+				(*dimension.Value != "video1" && *dimension.Value != "john") {
+				t.Fatal("dimension not properly sent")
+			}
+		}
+	}
+	
 	l.Close()
 }

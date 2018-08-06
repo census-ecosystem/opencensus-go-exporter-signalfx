@@ -266,7 +266,7 @@ func sendRequest(e *Exporter, data signalFxMetric) {
 
 const labelKeySizeLimit = 128
 
-// Sanitize returns a string that is trunacated to 100 characters if it's too
+// Sanitize returns a string that is truncated to 100 characters if it's too
 // long, and replaces non-alphanumeric characters to underscores.
 func sanitize(s string) string {
 	if len(s) == 0 {

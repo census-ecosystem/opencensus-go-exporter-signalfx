@@ -15,22 +15,20 @@
 package signalfx
 
 import (
-	"context"
-	"testing"
-	"time"
-
-	"go.opencensus.io/stats"
-
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"testing"
+	"time"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/signalfx/com_signalfx_metrics_protobuf"
+	"go.opencensus.io/stats"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/tag"
 )

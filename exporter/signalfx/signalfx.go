@@ -19,13 +19,12 @@ package signalfx // import "opencensus-go-signalfx/exporter/signalfx"
 import (
 	"bytes"
 	"context"
-	"log"
-	"sync"
-	"time"
-
 	"errors"
 	"fmt"
+	"log"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 
 	"github.com/signalfx/golib/datapoint"
@@ -39,7 +38,7 @@ type Exporter struct {
 	// Options used to register and log stats
 	opts   Options
 	c      *collector
-	client *sfxclient.HTTPSink
+	client *sfxclient.Scheduler
 }
 
 // Options contains options for configuring the exporter.
@@ -70,13 +69,15 @@ func NewExporter(o Options) (*Exporter, error) {
 	e := &Exporter{
 		opts:   o,
 		c:      collector,
-		client: sfxclient.NewHTTPSink(),
+		client: sfxclient.NewScheduler(),
 	}
 
 	if e.opts.DatapointEndpoint != "" {
-		e.client.DatapointEndpoint = e.opts.DatapointEndpoint
+		e.client.Sink.(*sfxclient.HTTPSink).DatapointEndpoint = e.opts.DatapointEndpoint
 	}
-	e.client.AuthToken = e.opts.Token
+	e.client.Sink.(*sfxclient.HTTPSink).AuthToken = e.opts.Token
+
+	go e.client.Schedule(context.Background())
 
 	return e, nil
 }
@@ -127,7 +128,7 @@ func (c *collector) toMetric(v *view.View, row *view.Row, vd *view.Data, e *Expo
 		metric := signalFxMetric{
 			metricName:     sanitize(vd.View.Name),
 			metricType:     "cumulative_counter",
-			metricValueInt: int64(data.Value),
+			metricValueInt: data.Value,
 			timestamp:      time.Now(),
 			dimensions:     buildDimensions(row.Tags),
 		}
@@ -145,7 +146,7 @@ func (c *collector) toMetric(v *view.View, row *view.Row, vd *view.Data, e *Expo
 		metric := signalFxMetric{
 			metricName:  sanitize(vd.View.Name),
 			metricType:  "gauge",
-			metricValue: float64(data.Value),
+			metricValue: data.Value,
 			timestamp:   time.Now(),
 			dimensions:  buildDimensions(row.Tags),
 		}
@@ -243,17 +244,16 @@ func viewSignature(namespace string, v *view.View) string {
 // sendRequest sends a package of data containing a metric
 func sendRequest(e *Exporter, data signalFxMetric) {
 	ctx := context.Background()
-
 	switch data.metricType {
 	case "gauge":
-		err := e.client.AddDatapoints(ctx, []*datapoint.Datapoint{
+		err := e.client.Sink.AddDatapoints(ctx, []*datapoint.Datapoint{
 			sfxclient.GaugeF(data.metricName, data.dimensions, data.metricValue),
 		})
 		if err != nil {
 			e.opts.onError(fmt.Errorf("error sending datapoint to SignalFx: %T", err))
 		}
 	case "cumulative_counter":
-		err := e.client.AddDatapoints(ctx, []*datapoint.Datapoint{
+		err := e.client.Sink.AddDatapoints(ctx, []*datapoint.Datapoint{
 			sfxclient.Cumulative(data.metricName, data.dimensions, data.metricValueInt),
 		})
 		if err != nil {
@@ -266,7 +266,7 @@ func sendRequest(e *Exporter, data signalFxMetric) {
 
 const labelKeySizeLimit = 128
 
-// Sanitize returns a string that is truncated to 100 characters if it's too
+// Sanitize returns a string that is truncated to 128 characters if it's too
 // long, and replaces non-alphanumeric characters to underscores.
 func sanitize(s string) string {
 	if len(s) == 0 {

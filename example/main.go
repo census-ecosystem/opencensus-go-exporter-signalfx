@@ -20,15 +20,13 @@ import (
 	"context"
 	"log"
 	"math/rand"
-	"time"
-
 	"net/http"
+	"time"
 
 	"opencensus-go-signalfx/exporter/signalfx"
 
 	"go.opencensus.io/stats"
 	"go.opencensus.io/stats/view"
-	"go.opencensus.io/tag"
 )
 
 // Create measures. The program will record measures for the size of
@@ -40,31 +38,6 @@ var (
 
 func main() {
 	ctx := context.Background()
-
-	// Creating tags for the views
-	key1, err := tag.NewKey("name")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	key2, err := tag.NewKey("author")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Assigning values to the tags in the context
-	ctx, err = tag.New(context.Background(),
-		tag.Insert(key1, "video1"),
-		tag.Upsert(key2, "john"),
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	var keys []tag.Key
-
-	keys = append(keys, key1)
-	keys = append(keys, key2)
 
 	exporter, err := signalfx.NewExporter(signalfx.Options{Token: "SIGNALFX_TOKEN"})
 	if err != nil {
@@ -81,26 +54,26 @@ func main() {
 			Name:        "video_count",
 			Description: "number of videos processed over time",
 			Measure:     videoCount,
-			TagKeys:     keys,
+			TagKeys:     nil,
 			Aggregation: view.Count(),
 		},
 		&view.View{
 			Name:        "video_size",
 			Description: "processed video size over time",
 			Measure:     videoSize,
-			TagKeys:     keys,
+			TagKeys:     nil,
 			Aggregation: view.Count(),
 		},
 	); err != nil {
 		log.Fatalf("Cannot register the view: %v", err)
 	}
 
-	view.SetReportingPeriod(1 * time.Second)
+	view.SetReportingPeriod(20 * time.Millisecond)
 
 	// Record some data points...
 	go func() {
 		for {
-			stats.Record(ctx, videoCount.M(1), videoSize.M(rand.Int63()))
+			stats.Record(ctx, videoCount.M(rand.Int63()), videoSize.M(rand.Int63()))
 			<-time.After(time.Millisecond * time.Duration(1+rand.Intn(400)))
 		}
 	}()

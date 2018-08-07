@@ -51,6 +51,10 @@ type Options struct {
 	// to SignalFx. The default value can be found as sfxclient.IngestEndpointV2
 	DatapointEndpoint string
 
+	// ReportingDelay contains the reporting interval.
+	// The default value is 20s
+	ReportingDelay time.Duration
+
 	// OnError is the hook to be called when there is
 	// an error uploading the stats or tracing data.
 	// If no custom hook is set, errors are logged.
@@ -76,6 +80,10 @@ func NewExporter(o Options) (*Exporter, error) {
 		e.client.Sink.(*sfxclient.HTTPSink).DatapointEndpoint = e.opts.DatapointEndpoint
 	}
 	e.client.Sink.(*sfxclient.HTTPSink).AuthToken = e.opts.Token
+
+	if e.opts.ReportingDelay != 0 {
+		e.client.ReportingDelay(e.opts.ReportingDelay)
+	}
 
 	go e.client.Schedule(context.Background())
 

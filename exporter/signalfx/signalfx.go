@@ -14,12 +14,11 @@
 
 // Package signalfx contains a SignalFx exporter that supports exporting
 // OpenCensus views as SignalFx data points.
-package signalfx // import "opencensus-go-signalfx/exporter/signalfx"
+package signalfx
 
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -65,7 +64,7 @@ type Options struct {
 // NewExporter returns an exporter that exports stats to SignalFx.
 func NewExporter(o Options) (*Exporter, error) {
 	if o.Token == "" {
-		err := errors.New(fmt.Sprintf("token cannot be empty on options %T", o))
+		err := fmt.Errorf("token cannot be empty on options %T", o)
 		return nil, err
 	}
 
@@ -160,6 +159,7 @@ func (c *collector) toMetric(v *view.View, row *view.Row, vd *view.Data, e *Expo
 		}
 		return metric
 	default:
+		// TODO: add support for histograms (Aggregation.DistributionData).
 		e.opts.onError(fmt.Errorf("aggregation %T is not yet supported", data))
 		return signalFxMetric{}
 	}

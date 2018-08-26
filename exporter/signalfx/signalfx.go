@@ -31,7 +31,9 @@ import (
 	"google.golang.org/api/support/bundler"
 )
 
-// Exporter exports stats to SignalFx
+// Exporter exports stats to SignalFx.
+// In this exporter the view name is mapped to the metric name
+// and the tags are mapped to dimensions.
 type Exporter struct {
 	// Options used to register and log stats
 	opts    Options
@@ -53,21 +55,20 @@ const defaultDelayThreshold = 200 * time.Millisecond
 // Options contains options for configuring the exporter.
 type Options struct {
 	// Token contains the required token to send datapoints
-	// to SignalFx. It cannot be empty
+	// to SignalFx. It cannot be empty.
 	Token string
 
 	// DatapointEndpoint contains the endpoint to send the datapoints
-	// to SignalFx. The default value can be found as sfxclient.IngestEndpointV2
+	// to SignalFx. The default value can be found as sfxclient.IngestEndpointV2.
 	DatapointEndpoint string
 
 	// ReportingDelay contains the reporting interval.
-	// The default value is 20s
+	// The default value is 20s.
 	ReportingDelay time.Duration
 
 	// OnError is the hook to be called when there is
 	// an error uploading the stats or tracing data.
 	// If no custom hook is set, errors are logged.
-	// Optional.
 	OnError func(err error)
 }
 
@@ -119,7 +120,7 @@ func (o *Options) onError(err error) {
 
 // ExportView exports to the SignalFx if view data has one or more rows.
 // Each OpenCensus stats records will be converted to
-// corresponding SignalFx Metric
+// corresponding SignalFx Metric.
 func (e *Exporter) ExportView(vd *view.Data) {
 	e.bundler.Add(vd, 1)
 }
@@ -164,7 +165,7 @@ func (e *Exporter) toMetric(v *view.View, row *view.Row, vd *view.Data) signalFx
 }
 
 // buildDimensions uses the tag values and keys to create
-// the dimensions used by SignalFx
+// the dimensions used by SignalFx.
 func buildDimensions(t []tag.Tag) map[string]string {
 	values := make(map[string]string)
 	for _, t := range t {
@@ -184,7 +185,7 @@ type signalFxMetric struct {
 }
 
 // sendBundle extracts stats data and calls toMetric
-// to convert the data to metrics formatted to graphite
+// to convert the data to metrics formatted to graphite.
 func (e *Exporter) sendBundle(vds []*view.Data) {
 	ctx := context.Background()
 	for _, vd := range vds {
@@ -234,11 +235,11 @@ func sanitize(s string) string {
 	return s
 }
 
-// sanitizeRune converts anything that is not a letter or digit to an underscore
+// sanitizeRune converts anything that is not a letter or digit to an underscore.
 func sanitizeRune(r rune) rune {
 	if unicode.IsLetter(r) || unicode.IsDigit(r) {
 		return r
 	}
-	// Everything else turns into an underscore
+	// Everything else turns into an underscore.
 	return '_'
 }

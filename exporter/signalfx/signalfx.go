@@ -17,12 +17,10 @@
 package signalfx
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
@@ -30,15 +28,27 @@ import (
 	"github.com/signalfx/golib/sfxclient"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/tag"
+	"google.golang.org/api/support/bundler"
 )
 
 // Exporter exports stats to SignalFx
 type Exporter struct {
 	// Options used to register and log stats
-	opts   Options
-	c      *collector
-	client *sfxclient.Scheduler
+	opts    Options
+	bundler *bundler.Bundler
+	client  *sfxclient.Scheduler
 }
+
+const (
+	defaultBufferedViewDataLimit = 10000 // max number of view.Data in flight
+	defaultBundleCountThreshold  = 100   // max number of view.Data per bundle
+)
+
+// defaultDelayThreshold is the amount of time we wait to receive new view.Data
+// from the aggregation pipeline. We normally expect to receive it in rapid
+// succession, so we set this to a small value to avoid waiting
+// unnecessarily before submitting.
+const defaultDelayThreshold = 200 * time.Millisecond
 
 // Options contains options for configuring the exporter.
 type Options struct {
@@ -68,12 +78,20 @@ func NewExporter(o Options) (*Exporter, error) {
 		return nil, err
 	}
 
-	collector := newCollector(o)
 	e := &Exporter{
 		opts:   o,
-		c:      collector,
 		client: sfxclient.NewScheduler(),
 	}
+
+	b := bundler.NewBundler((*view.Data)(nil), func(items interface{}) {
+		vds := items.([]*view.Data)
+		e.sendBundle(vds)
+	})
+	e.bundler = b
+
+	e.bundler.BufferedByteLimit = defaultBufferedViewDataLimit
+	e.bundler.BundleCountThreshold = defaultBundleCountThreshold
+	e.bundler.DelayThreshold = defaultDelayThreshold
 
 	if e.opts.DatapointEndpoint != "" {
 		e.client.Sink.(*sfxclient.HTTPSink).DatapointEndpoint = e.opts.DatapointEndpoint
@@ -91,22 +109,6 @@ func NewExporter(o Options) (*Exporter, error) {
 
 var _ view.Exporter = (*Exporter)(nil)
 
-// registerViews creates the view map and prevents duplicated views
-func (c *collector) registerViews(views ...*view.View) {
-	for _, thisView := range views {
-		sig := viewSignature(thisView.Name, thisView)
-		c.registeredViewsMu.Lock()
-		_, ok := c.registeredViews[sig]
-		c.registeredViewsMu.Unlock()
-		if !ok {
-			desc := sanitize(thisView.Name)
-			c.registeredViewsMu.Lock()
-			c.registeredViews[sig] = desc
-			c.registeredViewsMu.Unlock()
-		}
-	}
-}
-
 func (o *Options) onError(err error) {
 	if o.OnError != nil {
 		o.OnError(err)
@@ -119,57 +121,45 @@ func (o *Options) onError(err error) {
 // Each OpenCensus stats records will be converted to
 // corresponding SignalFx Metric
 func (e *Exporter) ExportView(vd *view.Data) {
-	if len(vd.Rows) == 0 {
-		return
-	}
-	e.c.addViewData(vd)
+	e.bundler.Add(vd, 1)
+}
 
-	extractViewData(vd, e)
+func (e *Exporter) Flush() {
+	e.bundler.Flush()
 }
 
 // toMetric receives the view data information and creates metrics that are adequate according to
 // graphite documentation.
-func (c *collector) toMetric(v *view.View, row *view.Row, vd *view.Data, e *Exporter) signalFxMetric {
+func (e *Exporter) toMetric(v *view.View, row *view.Row, vd *view.Data) signalFxMetric {
 	switch data := row.Data.(type) {
 	case *view.CountData:
-		metric := signalFxMetric{
+		return signalFxMetric{
 			metricName:     sanitize(vd.View.Name),
 			metricType:     "cumulative_counter",
 			metricValueInt: data.Value,
 			timestamp:      time.Now(),
 			dimensions:     buildDimensions(row.Tags),
 		}
-		return metric
 	case *view.SumData:
-		metric := signalFxMetric{
+		return signalFxMetric{
 			metricName:     sanitize(vd.View.Name),
 			metricType:     "cumulative_counter",
 			metricValueInt: int64(data.Value),
 			timestamp:      time.Now(),
 			dimensions:     buildDimensions(row.Tags),
 		}
-		return metric
 	case *view.LastValueData:
-		metric := signalFxMetric{
+		return signalFxMetric{
 			metricName:  sanitize(vd.View.Name),
 			metricType:  "gauge",
 			metricValue: data.Value,
 			timestamp:   time.Now(),
 			dimensions:  buildDimensions(row.Tags),
 		}
-		return metric
 	default:
 		// TODO: add support for histograms (Aggregation.DistributionData).
 		e.opts.onError(fmt.Errorf("aggregation %T is not yet supported", data))
 		return signalFxMetric{}
-	}
-}
-
-// extractViewData extracts stats data
-func extractViewData(vd *view.Data, e *Exporter) {
-	for _, row := range vd.Rows {
-		metric := e.c.toMetric(vd.View, row, vd, e)
-		go sendRequest(e, metric)
 	}
 }
 
@@ -183,31 +173,6 @@ func buildDimensions(t []tag.Tag) map[string]string {
 	return values
 }
 
-type collector struct {
-	opts Options
-	mu   sync.Mutex // mu guards all the fields.
-
-	// viewData are accumulated and atomically
-	// appended to on every Export invocation, from
-	// stats. These views are cleared out when
-	// Collect is invoked and the cycle is repeated.
-	viewData map[string]*view.Data
-
-	registeredViewsMu sync.Mutex
-
-	registeredViews map[string]string
-}
-
-// addViewData assigns the view data to the correct view
-func (c *collector) addViewData(vd *view.Data) {
-	c.registerViews(vd.View)
-	sig := viewSignature(vd.View.Name, vd.View)
-
-	c.mu.Lock()
-	c.viewData[sig] = vd
-	c.mu.Unlock()
-}
-
 type signalFxMetric struct {
 	metricType     string
 	metricName     string
@@ -218,57 +183,33 @@ type signalFxMetric struct {
 	buckets        []int64
 }
 
-// newCollector returns a collector struct
-func newCollector(opts Options) *collector {
-	return &collector{
-		opts:            opts,
-		registeredViews: make(map[string]string),
-		viewData:        make(map[string]*view.Data),
-	}
-}
-
-// viewName builds a unique name composed of the namespace
-// and the sanitized view name
-func viewName(namespace string, v *view.View) string {
-	var name string
-	if namespace != "" {
-		name = namespace + "_"
-	}
-	return name + sanitize(v.Name)
-}
-
-// viewSignature builds a signature that will identify a view
-// The signature consists of the namespace, the viewName and the
-// list of tags. Example: Namespace_viewName-tagName...
-func viewSignature(namespace string, v *view.View) string {
-	var buf bytes.Buffer
-	buf.WriteString(viewName(namespace, v))
-	for _, k := range v.TagKeys {
-		buf.WriteString("-" + k.Name())
-	}
-	return buf.String()
-}
-
-// sendRequest sends a package of data containing a metric
-func sendRequest(e *Exporter, data signalFxMetric) {
+// sendBundle extracts stats data and calls toMetric
+// to convert the data to metrics formatted to graphite
+func (e *Exporter) sendBundle(vds []*view.Data) {
 	ctx := context.Background()
-	switch data.metricType {
-	case "gauge":
-		err := e.client.Sink.AddDatapoints(ctx, []*datapoint.Datapoint{
-			sfxclient.GaugeF(data.metricName, data.dimensions, data.metricValue),
-		})
-		if err != nil {
-			e.opts.onError(fmt.Errorf("error sending datapoint to SignalFx: %T", err))
+	for _, vd := range vds {
+		for _, row := range vd.Rows {
+			metric := e.toMetric(vd.View, row, vd)
+			data := []*datapoint.Datapoint{}
+			switch metric.metricType {
+			case "gauge":
+				data = []*datapoint.Datapoint{
+					sfxclient.GaugeF(metric.metricName, metric.dimensions, metric.metricValue),
+				}
+			case "cumulative_counter":
+				data = []*datapoint.Datapoint{
+					sfxclient.Cumulative(metric.metricName, metric.dimensions, metric.metricValueInt),
+				}
+
+			default:
+				e.opts.onError(fmt.Errorf("metric type not supported: %s", metric.metricType))
+			}
+
+			err := e.client.Sink.AddDatapoints(ctx, data)
+			if err != nil {
+				e.opts.onError(fmt.Errorf("error sending datapoint to SignalFx: %T", err))
+			}
 		}
-	case "cumulative_counter":
-		err := e.client.Sink.AddDatapoints(ctx, []*datapoint.Datapoint{
-			sfxclient.Cumulative(data.metricName, data.dimensions, data.metricValueInt),
-		})
-		if err != nil {
-			e.opts.onError(fmt.Errorf("error sending datapoint to SignalFx: %T", err))
-		}
-	default:
-		e.opts.onError(fmt.Errorf("metric type not supported: %s", data.metricType))
 	}
 }
 

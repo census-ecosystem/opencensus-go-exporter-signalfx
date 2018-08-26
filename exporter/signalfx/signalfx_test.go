@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -156,9 +157,48 @@ func TestExporterTokenNotSet(t *testing.T) {
 	}
 }
 
+var token = &SafeToken{}
+
+type SafeToken struct {
+	token bool
+	m     sync.Mutex
+}
+
+func (i *SafeToken) Get() bool {
+	i.m.Lock()
+	// Defer `Unlock` until this method returns
+	defer i.m.Unlock()
+	// Return the value
+	return i.token
+}
+func (i *SafeToken) Set(val bool) {
+	i.m.Lock()
+	defer i.m.Unlock()
+	i.token = val
+}
+
+type SafeDatapoint struct {
+	datapoint []TestDatapoint
+	m         sync.Mutex
+}
+
+func (i *SafeDatapoint) Get() []TestDatapoint {
+	i.m.Lock()
+	// Defer `Unlock` until this method returns
+	defer i.m.Unlock()
+	// Return the value
+	return i.datapoint
+}
+func (i *SafeDatapoint) Set(val []TestDatapoint) {
+	i.m.Lock()
+	defer i.m.Unlock()
+	i.datapoint = val
+}
+
+var testGaugeDataPoints = &SafeDatapoint{}
+
 func TestGaugeDataOutput(t *testing.T) {
-	var dataPoints []TestDatapoint
-	var token = false
+	token.Set(false)
 	tokenValue := "opencensusT0k3n"
 	retString := `"OK"`
 	retCode := http.StatusOK
@@ -174,9 +214,8 @@ func TestGaugeDataOutput(t *testing.T) {
 		}
 		req.Body.Close()
 		proto.Unmarshal(bodyBytes.Bytes(), seenBodyPoints)
-
-		dataPoints = decodeDatapoints(*seenBodyPoints, dataPoints)
-		token = decodeToken(req, tokenValue)
+		testGaugeDataPoints.Set(decodeDatapoints(*seenBodyPoints, testGaugeDataPoints.Get()))
+		token.Set(decodeToken(req, tokenValue))
 
 		rw.WriteHeader(retCode)
 		io.WriteString(rw, retString)
@@ -233,21 +272,21 @@ func TestGaugeDataOutput(t *testing.T) {
 
 	for _, m := range measures {
 		stats.Record(context.Background(), m.M(1))
-		<-time.After(30 * time.Millisecond)
+		<-time.After(150 * time.Millisecond)
 	}
 
-	if !token {
+	if !token.Get() {
 		t.Fatal("Token not properly set")
 	}
 
-	if len(dataPoints) != len(measures) {
-		t.Fatalf("expected %d, but got %d dataPoints", len(measures), len(dataPoints))
+	if len(testGaugeDataPoints.Get()) != len(measures) {
+		t.Fatalf("expected %d, but got %d dataPoints", len(measures), len(testGaugeDataPoints.Get()))
 	}
 
 	for _, name := range names {
 		correct := false
 		metricName := "metric_" + name
-		for _, point := range dataPoints {
+		for _, point := range testGaugeDataPoints.Get() {
 			if metricName == point.MetricName &&
 				point.MetricValue == "1" &&
 				point.MetricType == "GAUGE" {
@@ -263,9 +302,10 @@ func TestGaugeDataOutput(t *testing.T) {
 	l.Close()
 }
 
+var testCounterDataPoints = &SafeDatapoint{}
+
 func TestCounterDataOutput(t *testing.T) {
-	var dataPoints []TestDatapoint
-	var token = false
+	token.Set(false)
 	tokenValue := "S3cr3tT0k3n"
 	retString := `"OK"`
 	retCode := http.StatusOK
@@ -273,7 +313,7 @@ func TestCounterDataOutput(t *testing.T) {
 	var cancelCallback func()
 
 	seenBodyPoints := &com_signalfx_metrics_protobuf.DataPointUploadMessage{}
-	handler := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+	handler2 := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		bodyBytes := bytes.Buffer{}
 		_, err := io.Copy(&bodyBytes, req.Body)
 		if err != nil {
@@ -281,8 +321,8 @@ func TestCounterDataOutput(t *testing.T) {
 		}
 		req.Body.Close()
 		proto.Unmarshal(bodyBytes.Bytes(), seenBodyPoints)
-		dataPoints = decodeDatapoints(*seenBodyPoints, dataPoints)
-		token = decodeToken(req, tokenValue)
+		testCounterDataPoints.Set(decodeDatapoints(*seenBodyPoints, testCounterDataPoints.Get()))
+		token.Set(decodeToken(req, tokenValue))
 
 		rw.WriteHeader(retCode)
 		io.WriteString(rw, retString)
@@ -300,7 +340,7 @@ func TestCounterDataOutput(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 
 	server := http.Server{
-		Handler: handler,
+		Handler: handler2,
 	}
 	serverDone := make(chan struct{})
 	go func() {
@@ -339,21 +379,21 @@ func TestCounterDataOutput(t *testing.T) {
 
 	for _, m := range measures {
 		stats.Record(context.Background(), m.M(1))
-		<-time.After(30 * time.Millisecond)
+		<-time.After(150 * time.Millisecond)
 	}
 
-	if !token {
+	if !token.Get() {
 		t.Fatal("Token not properly set")
 	}
 
-	if len(dataPoints) != len(measures) {
-		t.Fatalf("expected %d, but got %d dataPoints", len(measures), len(dataPoints))
+	if len(testCounterDataPoints.Get()) != len(measures) {
+		t.Fatalf("expected %d, but got %d dataPoints", len(measures), len(testCounterDataPoints.Get()))
 	}
 
 	for _, name := range names {
 		correct := false
 		metricName := "test_" + name
-		for _, point := range dataPoints {
+		for _, point := range testCounterDataPoints.Get() {
 			if metricName == point.MetricName &&
 				point.MetricValue == "1" &&
 				point.MetricType == "CUMULATIVE_COUNTER" {
@@ -369,9 +409,10 @@ func TestCounterDataOutput(t *testing.T) {
 	l.Close()
 }
 
+var testCounterDimDataPoints = &SafeDatapoint{}
+
 func TestCounterDataDimensionsOutput(t *testing.T) {
-	var dataPoints []TestDatapoint
-	var token = false
+	token.Set(false)
 	tokenValue := "S3cr3tT0k3nD1m3ns10s"
 	retString := `"OK"`
 	retCode := http.StatusOK
@@ -388,8 +429,8 @@ func TestCounterDataDimensionsOutput(t *testing.T) {
 		req.Body.Close()
 		proto.Unmarshal(bodyBytes.Bytes(), seenBodyPoints)
 
-		dataPoints = decodeDatapoints(*seenBodyPoints, dataPoints)
-		token = decodeToken(req, tokenValue)
+		testCounterDimDataPoints.Set(decodeDatapoints(*seenBodyPoints, testCounterDimDataPoints.Get()))
+		token.Set(decodeToken(req, tokenValue))
 
 		rw.WriteHeader(retCode)
 		io.WriteString(rw, retString)
@@ -470,21 +511,21 @@ func TestCounterDataDimensionsOutput(t *testing.T) {
 
 	for _, m := range measures {
 		stats.Record(ctx, m.M(1))
-		<-time.After(30 * time.Millisecond)
+		<-time.After(150 * time.Millisecond)
 	}
 
-	if !token {
+	if !token.Get() {
 		t.Fatal("Token not properly set")
 	}
 
-	if len(dataPoints) != len(measures) {
-		t.Fatalf("expected %d, but got %d dataPoints", len(measures), len(dataPoints))
+	if len(testCounterDimDataPoints.Get()) != len(measures) {
+		t.Fatalf("expected %d, but got %d dataPoints", len(measures), len(testCounterDimDataPoints.Get()))
 	}
 
 	for _, name := range names {
 		correct := false
 		metricName := "test_" + name
-		for _, point := range dataPoints {
+		for _, point := range testCounterDimDataPoints.Get() {
 			if metricName == point.MetricName &&
 				point.MetricValue == "1" &&
 				point.MetricType == "GAUGE" {
@@ -497,7 +538,7 @@ func TestCounterDataDimensionsOutput(t *testing.T) {
 		}
 	}
 
-	for _, point := range dataPoints {
+	for _, point := range testCounterDimDataPoints.Get() {
 		if len(point.MetricDimensions) != len(keys) {
 			t.Fatalf("expected %d, but got %d dimensions", len(keys), len(point.MetricDimensions))
 		}

@@ -27,6 +27,7 @@ import (
 
 	"go.opencensus.io/stats"
 	"go.opencensus.io/stats/view"
+	"os"
 )
 
 // Create measures. The program will record measures for the size of
@@ -38,8 +39,8 @@ var (
 
 func main() {
 	ctx := context.Background()
-
-	exporter, err := signalfx.NewExporter(signalfx.Options{Token: "SIGNALFX_TOKEN"})
+	token := os.Getenv("OPENCENSUS_SIGNALFX_TOKEN")
+	exporter, err := signalfx.NewExporter(signalfx.Options{Token: token})
 	if err != nil {
 		log.Fatal(err)
 	}
